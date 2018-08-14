@@ -89,6 +89,63 @@ func UploadFile(srv *drive.Service, address string) error {
 	return nil
 }
 
+func DownloadFile(srv *drive.Service, address string, fileId string) error {
+	f, err := srv.Files.Get(fileId).Download()
+
+	if err != nil {
+		return fmt.Errorf("failed to get newer version from cloud: %v", err)
+	}
+
+	defer f.Body.Close()
+
+	fh, err := os.OpenFile(address, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0600)
+
+	if err != nil {
+		return fmt.Errorf("failed to open target file for update from cloud: %v", err)
+	}
+
+	defer fh.Close()
+
+	err = f.Write(fh)
+
+	if err != nil {
+		return fmt.Errorf("failed to write download content from the cloud: %v", err)
+	}
+
+	return nil
+}
+
+func TmpDownloadFile(srv *drive.Service, address string, fileId string) error {
+	dirName, fileName := path.Split(address)
+	tmpAddress := path.Join(dirName, "_"+fileName)
+
+	err := DownloadFile(srv, tmpAddress, fileId)
+
+	if err != nil {
+		return err
+	}
+
+	_, err = os.Stat(address)
+
+	if err == nil {
+		err = os.Remove(address)
+
+		if err != nil {
+			return fmt.Errorf("failed to delete original file: %v", err)
+		}
+	} else if !os.IsExist(err) {
+		return fmt.Errorf("failed to stat original file: %v", err)
+	}
+
+	err = os.Rename(tmpAddress, address)
+
+	if err != nil {
+		return fmt.Errorf("failed to rename temp file to original: %v", err)
+	}
+
+	return nil
+}
+
 func main() {
 	b, err := ioutil.ReadFile("credentials.json")
 	if err != nil {
@@ -114,7 +171,8 @@ func main() {
 		log.Fatal("missing sync filename")
 	}
 
-	fileName := path.Base(os.Args[1])
+	fullAddress := os.Args[1]
+	fileName := path.Base(fullAddress)
 
 	log.Printf("querying gdrive for file name:%s", fileName)
 
@@ -124,16 +182,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Unable to retrieve files: %v", err)
 	}
+
 	if len(r.Files) == 0 {
 		log.Print("no files found.")
 
-		err = UploadFile(srv, os.Args[1])
+		err = UploadFile(srv, fullAddress)
 
 		if err != nil {
 			log.Fatalf("failed to upload file: %v", err)
 		}
 	} else {
 		maxMTime := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		maxFileId := ""
 
 		for _, i := range r.Files {
 			//fmt.Printf("%s (%s) %s\n", i.Name, i.Id, i.ModifiedTime)
@@ -145,22 +205,31 @@ func main() {
 
 			if maxMTime.Before(mTime) {
 				maxMTime = mTime
+				maxFileId = i.Id
 			}
 		}
 
-		fStat, err := os.Stat(os.Args[1])
+		fStat, err := os.Stat(fullAddress)
 
-		if err != nil {
+		if err != nil && os.IsExist(err) {
 			log.Fatalf("failed to get stats for file: %v", err)
 		}
 
-		if fStat.ModTime().After(maxMTime) {
+		if !os.IsExist(err) || fStat.ModTime().Before(maxMTime) {
+			log.Printf("local file is older than cloud, download cloud version")
+
+			err = TmpDownloadFile(srv, fullAddress, maxFileId)
+
+			if err != nil {
+				log.Fatalf("failed to download cloud version: %v", err)
+			}
+		} else if fStat.ModTime().After(maxMTime) {
 			log.Printf(
 				"local file %s is newer version %s",
 				fStat.ModTime().UTC().Format(time.RFC3339),
 				maxMTime.UTC().Format(time.RFC3339))
 
-			err = UploadFile(srv, os.Args[1])
+			err = UploadFile(srv, fullAddress)
 
 			if err != nil {
 				log.Fatalf("failed to upload file: %v", err)
