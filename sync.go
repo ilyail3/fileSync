@@ -133,7 +133,7 @@ func TmpDownloadFile(srv *drive.Service, address string, fileId string) error {
 		if err != nil {
 			return fmt.Errorf("failed to delete original file: %v", err)
 		}
-	} else if !os.IsExist(err) {
+	} else if os.IsExist(err) {
 		return fmt.Errorf("failed to stat original file: %v", err)
 	}
 
