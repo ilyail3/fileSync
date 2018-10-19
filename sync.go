@@ -3,28 +3,35 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ilyail3/fileSync/metadata"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
+	"github.com/kardianos/osext"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"
+
 	"net/url"
 	"path"
 	"time"
 )
 
 // Retrieve a token, saves the token, then returns the generated client.
-func getClient(config *oauth2.Config) *http.Client {
+func getClient(dirName string, config *oauth2.Config) *http.Client {
 	tokenFile := "token.json"
-	tok, err := tokenFromFile(tokenFile)
+	tok, err := tokenFromFile(findPath(dirName, tokenFile))
+
 	if err != nil {
 		tok = getTokenFromWeb(config)
 		saveToken(tokenFile, tok)
 	}
+
 	return config.Client(context.Background(), tok)
 }
 
@@ -69,7 +76,13 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
-func UploadFile(srv *drive.Service, address string) error {
+func UploadFile(srv *drive.Service, address string, metadataStore metadata.Store) error {
+	stats, err := os.Stat(address)
+
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %v", err)
+	}
+
 	fh, err := os.Open(address)
 	// modTime := time.Now().Format(time.RFC3339)
 
@@ -79,18 +92,30 @@ func UploadFile(srv *drive.Service, address string) error {
 
 	defer fh.Close()
 
-	f := drive.File{Name: path.Base(address)}
+	properties := make(map[string]string)
+
+	properties["mode"] = fmt.Sprintf("%d", stats.Mode())
+
+	log.Printf("properties: %v", properties)
+
+	f := drive.File{Name: path.Base(address), Properties: properties}
 	_, err = srv.Files.Create(&f).Media(fh).Do()
 
 	if err != nil {
 		return fmt.Errorf("upload operation failed: %v", err)
 	}
 
+	err = metadataStore.Set(address, metadata.FileMetadata{ModDate: time.Now()})
+
+	if err != nil {
+		return fmt.Errorf("failed to update metadata: %v", err)
+	}
+
 	return nil
 }
 
-func DownloadFile(srv *drive.Service, address string, fileId string) error {
-	f, err := srv.Files.Get(fileId).Download()
+func DownloadFile(srv *drive.Service, address string, file *drive.File) error {
+	f, err := srv.Files.Get(file.Id).Download()
 
 	if err != nil {
 		return fmt.Errorf("failed to get newer version from cloud: %v", err)
@@ -98,7 +123,21 @@ func DownloadFile(srv *drive.Service, address string, fileId string) error {
 
 	defer f.Body.Close()
 
-	fh, err := os.OpenFile(address, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0600)
+	var mode os.FileMode = 0600
+	modeString, exists := file.Properties["mode"]
+
+	if exists {
+		log.Printf("mode string is: %v", modeString)
+		mode64, err := strconv.ParseInt(modeString, 10, 32)
+
+		if err != nil {
+			return fmt.Errorf("failed to parse mode string:%s", modeString)
+		}
+
+		mode = os.FileMode(mode64)
+	}
+
+	fh, err := os.OpenFile(address, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, mode)
 
 	if err != nil {
 		return fmt.Errorf("failed to open target file for update from cloud: %v", err)
@@ -106,7 +145,7 @@ func DownloadFile(srv *drive.Service, address string, fileId string) error {
 
 	defer fh.Close()
 
-	err = f.Write(fh)
+	_, err = io.Copy(fh, f.Body)
 
 	if err != nil {
 		return fmt.Errorf("failed to write download content from the cloud: %v", err)
@@ -115,11 +154,11 @@ func DownloadFile(srv *drive.Service, address string, fileId string) error {
 	return nil
 }
 
-func TmpDownloadFile(srv *drive.Service, address string, fileId string) error {
+func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metadataStore metadata.Store) error {
 	dirName, fileName := path.Split(address)
 	tmpAddress := path.Join(dirName, "_"+fileName)
 
-	err := DownloadFile(srv, tmpAddress, fileId)
+	err := DownloadFile(srv, tmpAddress, file)
 
 	if err != nil {
 		return err
@@ -143,11 +182,51 @@ func TmpDownloadFile(srv *drive.Service, address string, fileId string) error {
 		return fmt.Errorf("failed to rename temp file to original: %v", err)
 	}
 
+	fStat, err := os.Stat(address)
+
+	if err != nil {
+		return fmt.Errorf("failed to stat file I just downloaded: %v", err)
+	}
+
+	err = metadataStore.Set(address, metadata.FileMetadata{ModDate: fStat.ModTime()})
+
+	if err != nil {
+		return fmt.Errorf("failed to write file metadata: %v", err)
+	}
+
 	return nil
 }
 
+func findPath(execDirName string, fileName string) string {
+	execName := path.Join(execDirName, fileName)
+
+	if _, err := os.Stat(execName); os.IsNotExist(err) {
+		return fileName
+	}
+
+	return execName
+}
+
 func main() {
-	b, err := ioutil.ReadFile("credentials.json")
+	execPath, err := osext.Executable()
+
+	if err != nil {
+		log.Fatalf("failed to get executable path")
+	}
+
+	dirName := path.Dir(execPath)
+	fmt.Printf("dir is:%s", dirName)
+
+	dbDir := path.Join(os.Getenv("HOME"), ".bin")
+	mtStore, err := metadata.NewSQLite3Store(dbDir)
+
+	if err != nil {
+		log.Fatalf("Failed to open metadata store: %v", err)
+	}
+
+	defer mtStore.Close()
+
+	b, err := ioutil.ReadFile(findPath(dirName, "credentials.json"))
 	if err != nil {
 		log.Fatalf("Unable to read client secret file: %v", err)
 	}
@@ -157,7 +236,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Unable to parse client secret file to config: %v", err)
 	}
-	client := getClient(config)
+	client := getClient(dirName, config)
 
 	srv, err := drive.New(client)
 	if err != nil {
@@ -177,26 +256,27 @@ func main() {
 	log.Printf("querying gdrive for file name:%s", fileName)
 
 	r, err := srv.Files.List().PageSize(10).
-		Fields("nextPageToken, files(id, name, modifiedTime)").Q(fmt.Sprintf("name='%s'", url.QueryEscape(fileName))).Do()
+		Fields("nextPageToken, files(id, name, modifiedTime, properties)").Q(fmt.Sprintf("name='%s'", url.QueryEscape(fileName))).Do()
 
 	if err != nil {
 		log.Fatalf("Unable to retrieve files: %v", err)
 	}
 
 	if len(r.Files) == 0 {
-		log.Print("no files found.")
+		log.Print("no files found, uploading")
 
-		err = UploadFile(srv, fullAddress)
+		err = UploadFile(srv, fullAddress, mtStore)
 
 		if err != nil {
 			log.Fatalf("failed to upload file: %v", err)
 		}
 	} else {
 		maxMTime := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-		maxFileId := ""
+		var maxFile *drive.File
 
 		for _, i := range r.Files {
 			//fmt.Printf("%s (%s) %s\n", i.Name, i.Id, i.ModifiedTime)
+
 			mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
 
 			if err != nil {
@@ -205,34 +285,68 @@ func main() {
 
 			if maxMTime.Before(mTime) {
 				maxMTime = mTime
-				maxFileId = i.Id
+				maxFile = i
 			}
 		}
 
-		fStat, err := os.Stat(fullAddress)
+		exists, mt, err := mtStore.Get(fullAddress)
 
-		if err != nil && os.IsExist(err) {
+		if err != nil {
+			log.Fatalf("failed to get mtstore metadata: %v", err)
+		}
+
+		fStat, statErr := os.Stat(fullAddress)
+
+		if statErr != nil && os.IsExist(statErr) {
 			log.Fatalf("failed to get stats for file: %v", err)
 		}
 
-		if !os.IsExist(err) || fStat.ModTime().Before(maxMTime) {
-			log.Printf("local file is older than cloud, download cloud version")
+		var download = false
 
-			err = TmpDownloadFile(srv, fullAddress, maxFileId)
+		if os.IsNotExist(statErr) {
+			log.Printf("local file missing, download")
+			download = true
+		} else {
+			var modDate = mt.ModDate
+
+			if !exists {
+				modDate = fStat.ModTime()
+			}
+
+			if modDate.Before(maxMTime) {
+				log.Printf("local file(%s) is older than cloud, download cloud version(%s)",
+					fStat.ModTime().UTC().Format(time.RFC3339),
+					maxMTime.UTC().Format(time.RFC3339))
+
+				download = true
+			}
+
+		}
+
+		if download {
+			err = TmpDownloadFile(srv, fullAddress, maxFile, mtStore)
 
 			if err != nil {
 				log.Fatalf("failed to download cloud version: %v", err)
 			}
-		} else if fStat.ModTime().After(maxMTime) {
-			log.Printf(
-				"local file %s is newer version %s",
-				fStat.ModTime().UTC().Format(time.RFC3339),
-				maxMTime.UTC().Format(time.RFC3339))
+		} else {
+			if !exists {
+				log.Printf("no modified date for %s", fullAddress)
+				blankDate, _ := time.Parse(time.RFC3339, "2000-01-01T00:00:00Z")
+				mt.ModDate = blankDate
+			}
 
-			err = UploadFile(srv, fullAddress)
+			if fStat.ModTime().After(mt.ModDate.Add(time.Second)) {
+				log.Printf(
+					"local file %s is newer version %s",
+					fStat.ModTime().UTC().Format(time.RFC3339),
+					maxMTime.UTC().Format(time.RFC3339))
 
-			if err != nil {
-				log.Fatalf("failed to upload file: %v", err)
+				err = UploadFile(srv, fullAddress, mtStore)
+
+				if err != nil {
+					log.Fatalf("failed to upload file: %v", err)
+				}
 			}
 		}
 
