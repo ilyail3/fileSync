@@ -215,7 +215,7 @@ func main() {
 	}
 
 	dirName := path.Dir(execPath)
-	fmt.Printf("dir is:%s", dirName)
+	log.Printf("dir is:%s", dirName)
 
 	dbDir := path.Join(os.Getenv("HOME"), ".bin")
 	mtStore, err := metadata.NewSQLite3Store(dbDir)
