@@ -9,5 +9,4 @@ type FileMetadata struct {
 type Store interface {
 	Get(fileAddress string) (bool, FileMetadata, error)
 	Set(fileAddress string, metadata FileMetadata) error
-	Close() error
 }

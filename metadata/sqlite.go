@@ -10,13 +10,13 @@ import (
 	"time"
 )
 
-type sqliteMetadataStore struct {
+type SqliteMetadataStore struct {
 	db       *sql.DB
 	getQuery *sql.Stmt
 	putQuery *sql.Stmt
 }
 
-func (s *sqliteMetadataStore) Get(fileAddress string) (bool, FileMetadata, error) {
+func (s *SqliteMetadataStore) Get(fileAddress string) (bool, FileMetadata, error) {
 	result, err := s.getQuery.Query(fileAddress)
 
 	if err != nil {
@@ -46,7 +46,7 @@ func (s *sqliteMetadataStore) Get(fileAddress string) (bool, FileMetadata, error
 	return true, FileMetadata{ModDate: downloadModDate}, nil
 }
 
-func (s *sqliteMetadataStore) Set(fileAddress string, metadata FileMetadata) error {
+func (s *SqliteMetadataStore) Set(fileAddress string, metadata FileMetadata) error {
 	mtString := metadata.ModDate.UTC().Format(time.RFC3339)
 
 	result, err := s.putQuery.Exec(fileAddress, mtString)
@@ -68,12 +68,37 @@ func (s *sqliteMetadataStore) Set(fileAddress string, metadata FileMetadata) err
 	return nil
 }
 
-func (s *sqliteMetadataStore) Close() error {
-
+func (s *SqliteMetadataStore) Close() error {
 	return s.db.Close()
 }
 
-func NewSQLite3Store(dirName string) (Store, error) {
+func (s *SqliteMetadataStore) GetAllSyncedFiles() ([]string, error) {
+	files := make([]string, 0)
+
+	rows, err := s.db.Query("SELECT filename FROM sync_mt")
+
+	if err != nil {
+		return files, fmt.Errorf("failed to query for synced filenames: %v", err)
+	}
+
+	defer rows.Close()
+
+	var filename string
+
+	for rows.Next() {
+		err = rows.Scan(&filename)
+
+		if err != nil {
+			return files, fmt.Errorf("failed to scan row: %v", err)
+		}
+
+		files = append(files, filename)
+	}
+
+	return files, nil
+}
+
+func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 	fileName := path.Join(dirName, "sync.sqlite3")
 
 	_, err := os.Stat(fileName)
@@ -127,7 +152,7 @@ func NewSQLite3Store(dirName string) (Store, error) {
 		return nil, fmt.Errorf("failed to prepare put query: %v", err)
 	}
 
-	return &sqliteMetadataStore{
+	return &SqliteMetadataStore{
 		db:       database,
 		getQuery: getQuery,
 		putQuery: putQuery}, nil

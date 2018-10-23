@@ -246,11 +246,35 @@ func main() {
 	//r, err := srv.Files.List().PageSize(10).
 	//	Fields("nextPageToken, files(id, name)").Do()
 
-	if len(os.Args) != 2 {
-		log.Fatal("missing sync filename")
+	// if no filename given sync everything
+	if len(os.Args) == 1 {
+		files, err := mtStore.GetAllSyncedFiles()
+
+		if err != nil {
+			log.Fatalf("failed to read all synced filenames: %v", err)
+		}
+
+		for _, fullAddress := range files {
+			log.Printf("syncing file: %s", fullAddress)
+
+			err = syncFile(fullAddress, srv, mtStore)
+
+			if err != nil {
+				log.Fatalf("failed to sync filename %s: %v", fullAddress, err)
+			}
+		}
+	} else {
+		fullAddress := os.Args[1]
+		err = syncFile(fullAddress, srv, mtStore)
+
+		if err != nil {
+			log.Fatalf("failed to sync filename %s: %v", fullAddress, err)
+		}
 	}
 
-	fullAddress := os.Args[1]
+}
+
+func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) error {
 	fileName := path.Base(fullAddress)
 
 	log.Printf("querying gdrive for file name:%s", fileName)
@@ -259,7 +283,7 @@ func main() {
 		Fields("nextPageToken, files(id, name, modifiedTime, properties)").Q(fmt.Sprintf("name='%s'", url.QueryEscape(fileName))).Do()
 
 	if err != nil {
-		log.Fatalf("Unable to retrieve files: %v", err)
+		return fmt.Errorf("unable to retrieve files: %v", err)
 	}
 
 	if len(r.Files) == 0 {
@@ -268,7 +292,7 @@ func main() {
 		err = UploadFile(srv, fullAddress, mtStore)
 
 		if err != nil {
-			log.Fatalf("failed to upload file: %v", err)
+			return fmt.Errorf("failed to upload file: %v", err)
 		}
 	} else {
 		maxMTime := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -280,7 +304,7 @@ func main() {
 			mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
 
 			if err != nil {
-				log.Fatalf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
+				return fmt.Errorf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
 			}
 
 			if maxMTime.Before(mTime) {
@@ -292,13 +316,13 @@ func main() {
 		exists, mt, err := mtStore.Get(fullAddress)
 
 		if err != nil {
-			log.Fatalf("failed to get mtstore metadata: %v", err)
+			return fmt.Errorf("failed to get mtstore metadata: %v", err)
 		}
 
 		fStat, statErr := os.Stat(fullAddress)
 
 		if statErr != nil && os.IsExist(statErr) {
-			log.Fatalf("failed to get stats for file: %v", err)
+			return fmt.Errorf("failed to get stats for file: %v", err)
 		}
 
 		var download = false
@@ -327,7 +351,7 @@ func main() {
 			err = TmpDownloadFile(srv, fullAddress, maxFile, mtStore)
 
 			if err != nil {
-				log.Fatalf("failed to download cloud version: %v", err)
+				return fmt.Errorf("failed to download cloud version: %v", err)
 			}
 		} else {
 			if !exists {
@@ -345,33 +369,45 @@ func main() {
 				err = UploadFile(srv, fullAddress, mtStore)
 
 				if err != nil {
-					log.Fatalf("failed to upload file: %v", err)
+					return fmt.Errorf("failed to upload file: %v", err)
 				}
 			}
 		}
 
-		if len(r.Files) > 1 {
-			for _, i := range r.Files {
-				mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
+		err = purgeOldFiles(srv, r, maxMTime)
 
-				if err != nil {
-					log.Fatalf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
-				}
+		if err != nil {
+			return fmt.Errorf("failed to purge old files: %v", err)
+		}
+	}
 
-				if mTime.Before(maxMTime) {
-					delta := time.Since(mTime)
-					hours := int(delta.Hours())
-					log.Printf("file %s is %d hours old", i.Id, hours)
+	return nil
+}
 
-					if hours > 24*10 {
-						err := srv.Files.Delete(i.Id).Do()
+func purgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time) error {
+	if len(r.Files) > 1 {
+		for _, i := range r.Files {
+			mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
 
-						if err != nil {
-							log.Fatalf("failed to cleanup old file: %v", err)
-						}
+			if err != nil {
+				return fmt.Errorf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
+			}
+
+			if mTime.Before(maxMTime) {
+				delta := time.Since(mTime)
+				hours := int(delta.Hours())
+				log.Printf("file %s is %d hours old", i.Id, hours)
+
+				if hours > 24*10 {
+					err := srv.Files.Delete(i.Id).Do()
+
+					if err != nil {
+						return fmt.Errorf("failed to cleanup old file: %v", err)
 					}
 				}
 			}
 		}
 	}
+
+	return nil
 }
