@@ -3,7 +3,8 @@ package metadata
 import "time"
 
 type FileMetadata struct {
-	ModDate time.Time
+	RemoteModDate time.Time
+	LocalModDate  time.Time
 }
 
 type Store interface {

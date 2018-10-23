@@ -29,27 +29,35 @@ func (s *SqliteMetadataStore) Get(fileAddress string) (bool, FileMetadata, error
 		return false, FileMetadata{}, nil
 	}
 
-	var modDate string
+	var remoteModDate string
+	var localModDate string
 
-	err = result.Scan(&modDate)
+	err = result.Scan(&remoteModDate, &localModDate)
 
 	if err != nil {
 		return false, FileMetadata{}, fmt.Errorf("failed to scan get query results: %v", err)
 	}
 
-	downloadModDate, err := time.Parse(time.RFC3339, modDate)
+	remoteModDateTime, err := time.Parse(time.RFC3339, remoteModDate)
 
 	if err != nil {
-		return false, FileMetadata{}, fmt.Errorf("failed to parse value '%s': %v", modDate, err)
+		return false, FileMetadata{}, fmt.Errorf("failed to parse value '%s': %v", remoteModDate, err)
 	}
 
-	return true, FileMetadata{ModDate: downloadModDate}, nil
+	localModDateTime, err := time.Parse(time.RFC3339, localModDate)
+
+	if err != nil {
+		return false, FileMetadata{}, fmt.Errorf("failed to parse value '%s': %v", localModDate, err)
+	}
+
+	return true, FileMetadata{LocalModDate: localModDateTime, RemoteModDate: remoteModDateTime}, nil
 }
 
 func (s *SqliteMetadataStore) Set(fileAddress string, metadata FileMetadata) error {
-	mtString := metadata.ModDate.UTC().Format(time.RFC3339)
+	mtStringRemote := metadata.RemoteModDate.UTC().Format(time.RFC3339)
+	mtStringLocal := metadata.LocalModDate.UTC().Format(time.RFC3339)
 
-	result, err := s.putQuery.Exec(fileAddress, mtString)
+	result, err := s.putQuery.Exec(fileAddress, mtStringRemote, mtStringLocal)
 
 	if err != nil {
 		return fmt.Errorf("failed to write metadata: %v", err)
@@ -116,7 +124,7 @@ func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 	}
 
 	if newDB {
-		statement, err := database.Prepare("CREATE TABLE sync_mt(filename text primary key, mod_date text);")
+		statement, err := database.Prepare("CREATE TABLE sync_mt(filename text primary key, remote_mod_date text, local_mod_date text);")
 
 		if err != nil {
 			database.Close()
@@ -138,14 +146,14 @@ func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 		}
 	}
 
-	getQuery, err := database.Prepare("SELECT mod_date FROM sync_mt WHERE filename = ?")
+	getQuery, err := database.Prepare("SELECT remote_mod_date,local_mod_date FROM sync_mt WHERE filename = ?")
 
 	if err != nil {
 		database.Close()
 		log.Fatalf("Failed to prepare get query: %v", err)
 	}
 
-	putQuery, err := database.Prepare("INSERT OR REPLACE INTO sync_mt(filename, mod_date) VALUES (?, ?)")
+	putQuery, err := database.Prepare("INSERT OR REPLACE INTO sync_mt(filename, remote_mod_date, local_mod_date) VALUES (?, ?, ?)")
 
 	if err != nil {
 		database.Close()

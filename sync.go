@@ -3,12 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ilyail3/fileSync/cleanup"
 	"github.com/ilyail3/fileSync/metadata"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 
 	"github.com/kardianos/osext"
@@ -21,6 +23,8 @@ import (
 	"path"
 	"time"
 )
+
+const SIGN_KEY = "DCB47525"
 
 // Retrieve a token, saves the token, then returns the generated client.
 func getClient(dirName string, config *oauth2.Config) *http.Client {
@@ -76,6 +80,39 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
+func SignFile(srv *drive.Service, address string) (bool, string, error) {
+	// gpg2 --yes --sign-with DCB47525 --detach-sig $1
+	cmd := exec.Command("gpg2", "--yes", "--sign-with", SIGN_KEY, "--detach-sig", address)
+	err := cmd.Run()
+
+	if err != nil {
+		return false, "", fmt.Errorf("failed to sign file: %v", err)
+	}
+
+	signFile := address + ".sig"
+
+	defer func() {
+		os.Remove(signFile)
+	}()
+
+	fh, err := os.Open(signFile)
+
+	if err != nil {
+		return false, "", fmt.Errorf("failed to open signature file: %v", err)
+	}
+
+	defer fh.Close()
+
+	f := drive.File{Name: path.Base(signFile)}
+	resultFile, err := srv.Files.Create(&f).Media(fh).Do()
+
+	if err != nil {
+		return false, "", fmt.Errorf("failed to upload signature file: %v", err)
+	}
+
+	return true, resultFile.Id, nil
+}
+
 func UploadFile(srv *drive.Service, address string, metadataStore metadata.Store) error {
 	stats, err := os.Stat(address)
 
@@ -96,16 +133,36 @@ func UploadFile(srv *drive.Service, address string, metadataStore metadata.Store
 
 	properties["mode"] = fmt.Sprintf("%d", stats.Mode())
 
+	// sign
+
+	signed, signatureFileId, err := SignFile(srv, address)
+
+	if err != nil {
+		return fmt.Errorf("failed to sign file: %v", err)
+	}
+
+	if signed {
+		properties["gpg"] = signatureFileId
+	}
+
 	log.Printf("properties: %v", properties)
 
-	f := drive.File{Name: path.Base(address), Properties: properties}
+	modTime := time.Now()
+
+	f := drive.File{Name: path.Base(address), Properties: properties, ModifiedTime: modTime.Format(time.RFC3339)}
 	_, err = srv.Files.Create(&f).Media(fh).Do()
 
 	if err != nil {
 		return fmt.Errorf("upload operation failed: %v", err)
 	}
 
-	err = metadataStore.Set(address, metadata.FileMetadata{ModDate: time.Now()})
+	fileInfo, err := os.Stat(address)
+
+	if err != nil {
+		return fmt.Errorf("failed to stat downloaded file: %v", err)
+	}
+
+	err = metadataStore.Set(address, metadata.FileMetadata{RemoteModDate: modTime, LocalModDate: fileInfo.ModTime()})
 
 	if err != nil {
 		return fmt.Errorf("failed to update metadata: %v", err)
@@ -156,6 +213,8 @@ func DownloadFile(srv *drive.Service, address string, file *drive.File) error {
 
 func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metadataStore metadata.Store) error {
 	dirName, fileName := path.Split(address)
+
+	var renamed = false
 	tmpAddress := path.Join(dirName, "_"+fileName)
 
 	err := DownloadFile(srv, tmpAddress, file)
@@ -164,11 +223,39 @@ func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metad
 		return err
 	}
 
+	defer func() {
+		if !renamed {
+			os.Remove(tmpAddress)
+		}
+	}()
+
+	gpgFileId, gpgExists := file.Properties["gpg"]
+
+	if gpgExists {
+		signatureFile := path.Join(dirName, "_"+fileName+".sig")
+
+		err = DownloadFile(srv, signatureFile, &drive.File{Id: gpgFileId, Properties: make(map[string]string)})
+
+		if err != nil {
+			return fmt.Errorf("failed to download gpg signature: %v", err)
+		}
+
+		defer func() {
+			os.Remove(signatureFile)
+		}()
+
+		cmd := exec.Command("gpg2", "--verify", signatureFile, tmpAddress)
+
+		err = cmd.Run()
+
+		if err != nil {
+			return fmt.Errorf("failed to verify file")
+		}
+	}
+
 	_, err = os.Stat(address)
 
 	if err == nil {
-		err = os.Remove(address)
-
 		if err != nil {
 			return fmt.Errorf("failed to delete original file: %v", err)
 		}
@@ -182,13 +269,22 @@ func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metad
 		return fmt.Errorf("failed to rename temp file to original: %v", err)
 	}
 
-	fStat, err := os.Stat(address)
+	// Mark the file as renamed, this will prevent delete attempt
+	renamed = true
+
+	modTime, err := time.Parse(time.RFC3339, file.ModifiedTime)
 
 	if err != nil {
-		return fmt.Errorf("failed to stat file I just downloaded: %v", err)
+		return fmt.Errorf("failed to parse mod date '%s': %v", file.ModifiedTime, err)
 	}
 
-	err = metadataStore.Set(address, metadata.FileMetadata{ModDate: fStat.ModTime()})
+	fileInfo, err := os.Stat(address)
+
+	if err != nil {
+		return fmt.Errorf("failed to stat downloaded file: %v", address)
+	}
+
+	err = metadataStore.Set(address, metadata.FileMetadata{RemoteModDate: modTime, LocalModDate: fileInfo.ModTime()})
 
 	if err != nil {
 		return fmt.Errorf("failed to write file metadata: %v", err)
@@ -274,9 +370,7 @@ func main() {
 
 }
 
-type FilesQuery func(srv *drive.Service, nextToken string) *drive.FilesListCall
-
-func listFilesQuery(fileName string) FilesQuery {
+func listFilesQuery(fileName string) cleanup.FilesQuery {
 	return func(srv *drive.Service, nextToken string) *drive.FilesListCall {
 		r := srv.Files.List().PageSize(10).
 			Fields("nextPageToken, files(id, name, modifiedTime, properties)").
@@ -296,6 +390,7 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 	log.Printf("querying gdrive for file name:%s", fileName)
 
 	queryFunction := listFilesQuery(fileName)
+	gpgQueryFunction := listFilesQuery(fileName + ".sig")
 
 	r, err := queryFunction(srv, "").Do()
 
@@ -348,7 +443,7 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 			log.Printf("local file missing, download")
 			download = true
 		} else {
-			var modDate = mt.ModDate
+			var modDate = mt.RemoteModDate
 
 			if !exists {
 				modDate = fStat.ModTime()
@@ -374,10 +469,10 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 			if !exists {
 				log.Printf("no modified date for %s", fullAddress)
 				blankDate, _ := time.Parse(time.RFC3339, "2000-01-01T00:00:00Z")
-				mt.ModDate = blankDate
+				mt.LocalModDate = blankDate
 			}
 
-			if fStat.ModTime().After(mt.ModDate.Add(time.Second)) {
+			if fStat.ModTime().After(mt.LocalModDate.Add(time.Second)) {
 				log.Printf(
 					"local file %s is newer version %s",
 					fStat.ModTime().UTC().Format(time.RFC3339),
@@ -391,7 +486,7 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 			}
 		}
 
-		err = purgeOldFiles(srv, r, maxMTime, queryFunction)
+		err = cleanup.PurgeOldFiles(srv, r, maxMTime, queryFunction, gpgQueryFunction)
 
 		if err != nil {
 			return fmt.Errorf("failed to purge old files: %v", err)
@@ -399,47 +494,4 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 	}
 
 	return nil
-}
-
-func purgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, queryFunction FilesQuery) error {
-
-	if len(r.Files) > 1 {
-		for {
-			for _, i := range r.Files {
-				mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
-
-				if err != nil {
-					return fmt.Errorf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
-				}
-
-				if mTime.Before(maxMTime) {
-					delta := time.Since(mTime)
-					hours := int(delta.Hours())
-					log.Printf("file %s is %d hours old", i.Id, hours)
-
-					if hours > 24*10 {
-						err := srv.Files.Delete(i.Id).Do()
-
-						if err != nil {
-							return fmt.Errorf("failed to cleanup old file: %v", err)
-						}
-					}
-				}
-			}
-
-			if r.NextPageToken == "" {
-				return nil
-			} else {
-				nextR, err := queryFunction(srv, r.NextPageToken).Do()
-
-				if err != nil {
-					return fmt.Errorf("failed to get next page: %v", err)
-				}
-
-				r = nextR
-			}
-		}
-	} else {
-		return nil
-	}
 }
