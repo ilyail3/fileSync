@@ -274,13 +274,30 @@ func main() {
 
 }
 
+type FilesQuery func(srv *drive.Service, nextToken string) *drive.FilesListCall
+
+func listFilesQuery(fileName string) FilesQuery {
+	return func(srv *drive.Service, nextToken string) *drive.FilesListCall {
+		r := srv.Files.List().PageSize(10).
+			Fields("nextPageToken, files(id, name, modifiedTime, properties)").
+			Q(fmt.Sprintf("name='%s'", url.QueryEscape(fileName)))
+
+		if nextToken != "" {
+			r = r.PageToken(nextToken)
+		}
+
+		return r
+	}
+}
+
 func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) error {
 	fileName := path.Base(fullAddress)
 
 	log.Printf("querying gdrive for file name:%s", fileName)
 
-	r, err := srv.Files.List().PageSize(10).
-		Fields("nextPageToken, files(id, name, modifiedTime, properties)").Q(fmt.Sprintf("name='%s'", url.QueryEscape(fileName))).Do()
+	queryFunction := listFilesQuery(fileName)
+
+	r, err := queryFunction(srv, "").Do()
 
 	if err != nil {
 		return fmt.Errorf("unable to retrieve files: %v", err)
@@ -374,7 +391,7 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 			}
 		}
 
-		err = purgeOldFiles(srv, r, maxMTime)
+		err = purgeOldFiles(srv, r, maxMTime, queryFunction)
 
 		if err != nil {
 			return fmt.Errorf("failed to purge old files: %v", err)
@@ -384,30 +401,45 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 	return nil
 }
 
-func purgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time) error {
+func purgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, queryFunction FilesQuery) error {
+
 	if len(r.Files) > 1 {
-		for _, i := range r.Files {
-			mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
+		for {
+			for _, i := range r.Files {
+				mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
 
-			if err != nil {
-				return fmt.Errorf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
-			}
+				if err != nil {
+					return fmt.Errorf("failed to parse modified time from google '%s': %v", i.ModifiedTime, err)
+				}
 
-			if mTime.Before(maxMTime) {
-				delta := time.Since(mTime)
-				hours := int(delta.Hours())
-				log.Printf("file %s is %d hours old", i.Id, hours)
+				if mTime.Before(maxMTime) {
+					delta := time.Since(mTime)
+					hours := int(delta.Hours())
+					log.Printf("file %s is %d hours old", i.Id, hours)
 
-				if hours > 24*10 {
-					err := srv.Files.Delete(i.Id).Do()
+					if hours > 24*10 {
+						err := srv.Files.Delete(i.Id).Do()
 
-					if err != nil {
-						return fmt.Errorf("failed to cleanup old file: %v", err)
+						if err != nil {
+							return fmt.Errorf("failed to cleanup old file: %v", err)
+						}
 					}
 				}
 			}
-		}
-	}
 
-	return nil
+			if r.NextPageToken == "" {
+				return nil
+			} else {
+				nextR, err := queryFunction(srv, r.NextPageToken).Do()
+
+				if err != nil {
+					return fmt.Errorf("failed to get next page: %v", err)
+				}
+
+				r = nextR
+			}
+		}
+	} else {
+		return nil
+	}
 }
