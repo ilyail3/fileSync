@@ -318,7 +318,7 @@ func main() {
 	}
 
 	dirName := path.Dir(execPath)
-	log.Printf("dir is:%s", dirName)
+	// log.Printf("dir is:%s", dirName)
 
 	dbDir := path.Join(os.Getenv("HOME"), ".bin")
 	mtStore, err := metadata.NewSQLite3Store(dbDir)
@@ -371,7 +371,7 @@ func main() {
 		parentId = fList.Files[0].Id
 	}
 
-	log.Printf("folder id is:%s", parentId)
+	// log.Printf("folder id is:%s", parentId)
 
 	//r, err := srv.Files.List().PageSize(10).
 	//	Fields("nextPageToken, files(id, name)").Do()
