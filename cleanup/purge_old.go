@@ -12,6 +12,7 @@ import (
 type FilesQuery func(srv *drive.Service, nextToken string) *drive.FilesListCall
 
 func purgeOldGpgSignatures(srv *drive.Service, gpgSignatures sets.Set, gpgQueryFunction FilesQuery) error {
+
 	var nextToken = ""
 
 	for {
@@ -24,7 +25,9 @@ func purgeOldGpgSignatures(srv *drive.Service, gpgSignatures sets.Set, gpgQueryF
 		for _, i := range r.Files {
 			if !gpgSignatures.Contains(i.Id) {
 				log.Printf("purging gpg signate %s from %s", i.Id, i.ModifiedTime)
+
 				err = srv.Files.Delete(i.Id).Do()
+				//log.Printf("delete signature:%s", i.Id)
 
 				if err != nil {
 					return fmt.Errorf("failed to delete file %s: %v", i.Id, err)
@@ -43,7 +46,7 @@ func purgeOldGpgSignatures(srv *drive.Service, gpgSignatures sets.Set, gpgQueryF
 func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, queryFunction FilesQuery, gpgQueryFunction FilesQuery) error {
 	var gpgSignatures = hashset.New()
 
-	if len(r.Files) > 1 {
+	if len(r.Files) > 0 {
 		for {
 			for _, i := range r.Files {
 				mTime, err := time.Parse(time.RFC3339, i.ModifiedTime)
@@ -80,7 +83,7 @@ func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, qu
 			}
 
 			if r.NextPageToken == "" {
-				log.Printf("gpg singatures: %d", gpgSignatures.Size())
+				// log.Printf("gpg singatures: %d", gpgSignatures.Size())
 				return purgeOldGpgSignatures(srv, gpgSignatures, gpgQueryFunction)
 			} else {
 				nextR, err := queryFunction(srv, r.NextPageToken).Do()
@@ -93,7 +96,7 @@ func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, qu
 			}
 		}
 	} else {
-		log.Printf("gpg singatures: %d", gpgSignatures.Size())
+		// log.Printf("gpg singatures: %d", gpgSignatures.Size())
 		return purgeOldGpgSignatures(srv, gpgSignatures, gpgQueryFunction)
 	}
 }

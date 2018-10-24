@@ -24,7 +24,9 @@ import (
 	"time"
 )
 
-const SIGN_KEY = "DCB47525"
+const SignKey = "DCB47525"
+const FolderMimeType = "application/vnd.google-apps.folder"
+const SyncFolderName = "sync"
 
 // Retrieve a token, saves the token, then returns the generated client.
 func getClient(dirName string, config *oauth2.Config) *http.Client {
@@ -80,9 +82,9 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
-func SignFile(srv *drive.Service, address string) (bool, string, error) {
+func SignFile(srv *drive.Service, address string, parentId string) (bool, string, error) {
 	// gpg2 --yes --sign-with DCB47525 --detach-sig $1
-	cmd := exec.Command("gpg2", "--yes", "--sign-with", SIGN_KEY, "--detach-sig", address)
+	cmd := exec.Command("gpg2", "--yes", "--sign-with", SignKey, "--detach-sig", address)
 	err := cmd.Run()
 
 	if err != nil {
@@ -103,7 +105,7 @@ func SignFile(srv *drive.Service, address string) (bool, string, error) {
 
 	defer fh.Close()
 
-	f := drive.File{Name: path.Base(signFile)}
+	f := drive.File{Name: path.Base(signFile), Parents: []string{parentId}}
 	resultFile, err := srv.Files.Create(&f).Media(fh).Do()
 
 	if err != nil {
@@ -113,7 +115,7 @@ func SignFile(srv *drive.Service, address string) (bool, string, error) {
 	return true, resultFile.Id, nil
 }
 
-func UploadFile(srv *drive.Service, address string, metadataStore metadata.Store) error {
+func UploadFile(srv *drive.Service, address string, parentId string, metadataStore metadata.Store) error {
 	stats, err := os.Stat(address)
 
 	if err != nil {
@@ -135,7 +137,7 @@ func UploadFile(srv *drive.Service, address string, metadataStore metadata.Store
 
 	// sign
 
-	signed, signatureFileId, err := SignFile(srv, address)
+	signed, signatureFileId, err := SignFile(srv, address, parentId)
 
 	if err != nil {
 		return fmt.Errorf("failed to sign file: %v", err)
@@ -149,7 +151,12 @@ func UploadFile(srv *drive.Service, address string, metadataStore metadata.Store
 
 	modTime := time.Now()
 
-	f := drive.File{Name: path.Base(address), Properties: properties, ModifiedTime: modTime.Format(time.RFC3339)}
+	f := drive.File{
+		Name:         path.Base(address),
+		Properties:   properties,
+		ModifiedTime: modTime.Format(time.RFC3339),
+		Parents:      []string{parentId}}
+
 	_, err = srv.Files.Create(&f).Media(fh).Do()
 
 	if err != nil {
@@ -339,6 +346,33 @@ func main() {
 		log.Fatalf("Unable to retrieve Drive client: %v", err)
 	}
 
+	// Get parent directory
+	fList, err := srv.Files.List().Q(fmt.Sprintf(
+		"name='%s' and mimeType='%s'",
+		url.QueryEscape(SyncFolderName),
+		FolderMimeType)).Do()
+
+	if err != nil {
+		log.Fatalf("failed to lookup sync directory: %v", err)
+	}
+
+	var parentId = ""
+
+	if len(fList.Files) == 0 {
+		var folderFile *drive.File
+		folderFile, err = srv.Files.Create(&drive.File{Name: SyncFolderName, MimeType: "application/vnd.google-apps.folder"}).Do()
+
+		if err != nil {
+			log.Fatalf("failed to create sync folder: %v", err)
+		}
+
+		parentId = folderFile.Id
+	} else {
+		parentId = fList.Files[0].Id
+	}
+
+	log.Printf("folder id is:%s", parentId)
+
 	//r, err := srv.Files.List().PageSize(10).
 	//	Fields("nextPageToken, files(id, name)").Do()
 
@@ -353,7 +387,7 @@ func main() {
 		for _, fullAddress := range files {
 			log.Printf("syncing file: %s", fullAddress)
 
-			err = syncFile(fullAddress, srv, mtStore)
+			err = syncFile(fullAddress, parentId, srv, mtStore)
 
 			if err != nil {
 				log.Fatalf("failed to sync filename %s: %v", fullAddress, err)
@@ -361,7 +395,7 @@ func main() {
 		}
 	} else {
 		fullAddress := os.Args[1]
-		err = syncFile(fullAddress, srv, mtStore)
+		err = syncFile(fullAddress, parentId, srv, mtStore)
 
 		if err != nil {
 			log.Fatalf("failed to sync filename %s: %v", fullAddress, err)
@@ -370,11 +404,13 @@ func main() {
 
 }
 
-func listFilesQuery(fileName string) cleanup.FilesQuery {
+func listFilesQuery(parentId string, fileName string) cleanup.FilesQuery {
 	return func(srv *drive.Service, nextToken string) *drive.FilesListCall {
+		query := fmt.Sprintf("name='%s' and parents in '%s'", url.QueryEscape(fileName), url.QueryEscape(parentId))
+
 		r := srv.Files.List().PageSize(10).
 			Fields("nextPageToken, files(id, name, modifiedTime, properties)").
-			Q(fmt.Sprintf("name='%s'", url.QueryEscape(fileName)))
+			Q(query)
 
 		if nextToken != "" {
 			r = r.PageToken(nextToken)
@@ -384,13 +420,13 @@ func listFilesQuery(fileName string) cleanup.FilesQuery {
 	}
 }
 
-func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) error {
+func syncFile(fullAddress string, parentId string, srv *drive.Service, mtStore metadata.Store) error {
 	fileName := path.Base(fullAddress)
 
 	log.Printf("querying gdrive for file name:%s", fileName)
 
-	queryFunction := listFilesQuery(fileName)
-	gpgQueryFunction := listFilesQuery(fileName + ".sig")
+	queryFunction := listFilesQuery(parentId, fileName)
+	gpgQueryFunction := listFilesQuery(parentId, fileName+".sig")
 
 	r, err := queryFunction(srv, "").Do()
 
@@ -401,7 +437,7 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 	if len(r.Files) == 0 {
 		log.Print("no files found, uploading")
 
-		err = UploadFile(srv, fullAddress, mtStore)
+		err = UploadFile(srv, fullAddress, parentId, mtStore)
 
 		if err != nil {
 			return fmt.Errorf("failed to upload file: %v", err)
@@ -478,7 +514,7 @@ func syncFile(fullAddress string, srv *drive.Service, mtStore metadata.Store) er
 					fStat.ModTime().UTC().Format(time.RFC3339),
 					maxMTime.UTC().Format(time.RFC3339))
 
-				err = UploadFile(srv, fullAddress, mtStore)
+				err = UploadFile(srv, fullAddress, parentId, mtStore)
 
 				if err != nil {
 					return fmt.Errorf("failed to upload file: %v", err)
