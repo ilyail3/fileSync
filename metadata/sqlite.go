@@ -11,9 +11,11 @@ import (
 )
 
 type SqliteMetadataStore struct {
-	db       *sql.DB
-	getQuery *sql.Stmt
-	putQuery *sql.Stmt
+	db                *sql.DB
+	getQuery          *sql.Stmt
+	putQuery          *sql.Stmt
+	readStringConfig  *sql.Stmt
+	writeStringConfig *sql.Stmt
 }
 
 func (s *SqliteMetadataStore) Get(fileAddress string) (bool, FileMetadata, error) {
@@ -106,6 +108,38 @@ func (s *SqliteMetadataStore) GetAllSyncedFiles() ([]string, error) {
 	return files, nil
 }
 
+func runQuery(db *sql.DB, query string) error {
+	statement, err := db.Prepare(query)
+
+	if err != nil {
+		return fmt.Errorf("failed to prepare mod_date create table query: %v", err)
+	}
+
+	_, err = statement.Exec()
+
+	if err != nil {
+		return fmt.Errorf("failed to execute mod_date create table query: %v", err)
+	}
+
+	return nil
+}
+
+func createNewDatabase(db *sql.DB) error {
+	err := runQuery(db, "CREATE TABLE sync_mt(filename text primary key, remote_mod_date text, local_mod_date text);")
+
+	if err != nil {
+		return err
+	}
+
+	err = runQuery(db, "CREATE TABLE config_string(config_key text primary key, string_value text);")
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 	fileName := path.Join(dirName, "sync.sqlite3")
 
@@ -123,25 +157,16 @@ func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 		return nil, fmt.Errorf("failed to open sqlite3 database: %v", err)
 	}
 
+	defer func() {
+		if err != nil {
+			database.Close()
+		}
+	}()
+
 	if newDB {
-		statement, err := database.Prepare("CREATE TABLE sync_mt(filename text primary key, remote_mod_date text, local_mod_date text);")
+		err = createNewDatabase(database)
 
 		if err != nil {
-			database.Close()
-			return nil, fmt.Errorf("failed to prepare mod_date create table query: %v", err)
-		}
-
-		_, err = statement.Exec()
-
-		if err != nil {
-			database.Close()
-			return nil, fmt.Errorf("failed to execute mod_date create table query: %v", err)
-		}
-
-		err = statement.Close()
-
-		if err != nil {
-			database.Close()
 			return nil, fmt.Errorf("failed to close statement: %v", err)
 		}
 	}
@@ -149,19 +174,31 @@ func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 	getQuery, err := database.Prepare("SELECT remote_mod_date,local_mod_date FROM sync_mt WHERE filename = ?")
 
 	if err != nil {
-		database.Close()
 		log.Fatalf("Failed to prepare get query: %v", err)
 	}
 
 	putQuery, err := database.Prepare("INSERT OR REPLACE INTO sync_mt(filename, remote_mod_date, local_mod_date) VALUES (?, ?, ?)")
 
 	if err != nil {
-		database.Close()
+		return nil, fmt.Errorf("failed to prepare put query: %v", err)
+	}
+
+	readStringConfigQuery, err := database.Prepare("SELECT string_value FROM config_string WHERE config_key = ?")
+
+	if err != nil {
+		log.Fatalf("Failed to prepare get query: %v", err)
+	}
+
+	writeStringConfigQuery, err := database.Prepare("INSERT OR REPLACE INTO config_string(config_key, string_value) VALUES (?, ?)")
+
+	if err != nil {
 		return nil, fmt.Errorf("failed to prepare put query: %v", err)
 	}
 
 	return &SqliteMetadataStore{
-		db:       database,
-		getQuery: getQuery,
-		putQuery: putQuery}, nil
+		db:                database,
+		getQuery:          getQuery,
+		putQuery:          putQuery,
+		readStringConfig:  readStringConfigQuery,
+		writeStringConfig: writeStringConfigQuery}, nil
 }
