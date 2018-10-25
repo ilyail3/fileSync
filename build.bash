@@ -2,14 +2,13 @@
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 
-go build -i -o sync "$DIR/sync.go" #gosetup
+GOROOT=/usr/local/go
+GOPATH="$( realpath $DIR/../../../.. )"
+
+$GOROOT/bin/go build -o ~/.bin/sync "$DIR/sync.go"
 rc=$?; if [[ $rc != 0 ]]; then exit $rc; fi
 
-cp "$DIR/credentials.json" credentials.json
-rc=$?; if [[ $rc != 0 ]]; then exit $rc; fi
+echo "build successful, syncing credentials"
 
-tar -cvzpf sync.tar.gz sync credentials.json
-rc=$?; if [[ $rc != 0 ]]; then exit $rc; fi
-
-gpg2 --encrypt --sign -r DCB47525 sync.tar.gz
+rsync "$DIR/credentials.json" "$DIR/token.json" ~/.bin/
 rc=$?; if [[ $rc != 0 ]]; then exit $rc; fi
