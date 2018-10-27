@@ -2,7 +2,8 @@
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 
-GOROOT=/usr/local/go
+. "$DIR/env.bash"
+
 GOPATH="$( realpath $DIR/../../../.. )"
 
 $GOROOT/bin/go build -o ~/.bin/sync "$DIR/sync.go"
