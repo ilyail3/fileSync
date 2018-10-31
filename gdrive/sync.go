@@ -2,6 +2,7 @@ package gdrive
 
 import (
 	"fmt"
+	"github.com/emirpasic/gods/sets/hashset"
 	"github.com/ilyail3/fileSync/cleanup"
 	"github.com/ilyail3/fileSync/metadata"
 	"google.golang.org/api/drive/v3"
@@ -21,6 +22,8 @@ func SyncFile(fullAddress string, parentId string, srv *drive.Service, mtStore m
 
 	r, err := queryFunction(srv, "").Do()
 
+	gpgFiles := hashset.New()
+
 	if err != nil {
 		return fmt.Errorf("unable to retrieve files: %v", err)
 	}
@@ -28,7 +31,7 @@ func SyncFile(fullAddress string, parentId string, srv *drive.Service, mtStore m
 	if len(r.Files) == 0 {
 		log.Print("no files found, uploading")
 
-		err = UploadFile(srv, fullAddress, parentId, mtStore, signKey)
+		err = UploadFile(srv, fullAddress, parentId, mtStore, signKey, gpgFiles)
 
 		if err != nil {
 			return fmt.Errorf("failed to upload file: %v", err)
@@ -105,7 +108,7 @@ func SyncFile(fullAddress string, parentId string, srv *drive.Service, mtStore m
 					fStat.ModTime().UTC().Format(time.RFC3339),
 					maxMTime.UTC().Format(time.RFC3339))
 
-				err = UploadFile(srv, fullAddress, parentId, mtStore, signKey)
+				err = UploadFile(srv, fullAddress, parentId, mtStore, signKey, gpgFiles)
 
 				if err != nil {
 					return fmt.Errorf("failed to upload file: %v", err)
@@ -113,7 +116,7 @@ func SyncFile(fullAddress string, parentId string, srv *drive.Service, mtStore m
 			}
 		}
 
-		err = cleanup.PurgeOldFiles(srv, r, maxMTime, queryFunction, gpgQueryFunction)
+		err = cleanup.PurgeOldFiles(srv, r, maxMTime, queryFunction, gpgQueryFunction, gpgFiles)
 
 		if err != nil {
 			return fmt.Errorf("failed to purge old files: %v", err)

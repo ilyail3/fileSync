@@ -2,6 +2,7 @@ package gdrive
 
 import (
 	"fmt"
+	"github.com/emirpasic/gods/sets"
 	"github.com/ilyail3/fileSync/metadata"
 	"google.golang.org/api/drive/v3"
 	"log"
@@ -44,7 +45,7 @@ func signFile(srv *drive.Service, address string, parentId string, signKey strin
 	return resultFile.Id, nil
 }
 
-func UploadFile(srv *drive.Service, address string, parentId string, metadataStore metadata.Store, signKey string) error {
+func UploadFile(srv *drive.Service, address string, parentId string, metadataStore metadata.Store, signKey string, gpgFiles sets.Set) error {
 	stats, err := os.Stat(address)
 
 	if err != nil {
@@ -73,6 +74,7 @@ func UploadFile(srv *drive.Service, address string, parentId string, metadataSto
 		}
 
 		properties["gpg"] = signatureFileId
+		gpgFiles.Add(signatureFileId)
 	}
 
 	log.Printf("properties: %v", properties)

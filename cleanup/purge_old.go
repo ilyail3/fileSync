@@ -3,7 +3,6 @@ package cleanup
 import (
 	"fmt"
 	"github.com/emirpasic/gods/sets"
-	"github.com/emirpasic/gods/sets/hashset"
 	"google.golang.org/api/drive/v3"
 	"log"
 	"time"
@@ -43,9 +42,7 @@ func purgeOldGpgSignatures(srv *drive.Service, gpgSignatures sets.Set, gpgQueryF
 	}
 }
 
-func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, queryFunction FilesQuery, gpgQueryFunction FilesQuery) error {
-	var gpgSignatures = hashset.New()
-
+func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, queryFunction FilesQuery, gpgQueryFunction FilesQuery, gpgSignatures sets.Set) error {
 	if len(r.Files) > 0 {
 		for {
 			for _, i := range r.Files {
