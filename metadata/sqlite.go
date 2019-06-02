@@ -25,7 +25,13 @@ func (s *SqliteMetadataStore) Get(fileAddress string) (bool, FileMetadata, error
 		return false, FileMetadata{}, fmt.Errorf("failed to get metadata from sqlite: %v", err)
 	}
 
-	defer result.Close()
+	defer func() {
+		err := result.Close()
+
+		if err != nil {
+			log.Printf("failed to close sql rows: %v", err)
+		}
+	}()
 
 	if !result.Next() {
 		return false, FileMetadata{}, nil
@@ -91,7 +97,13 @@ func (s *SqliteMetadataStore) GetAllSyncedFiles() ([]string, error) {
 		return files, fmt.Errorf("failed to query for synced filenames: %v", err)
 	}
 
-	defer rows.Close()
+	defer func() {
+		err := rows.Close()
+
+		if err != nil {
+			log.Printf("failed to close rows: %v")
+		}
+	}()
 
 	var filename string
 
@@ -158,8 +170,10 @@ func NewSQLite3Store(dirName string) (*SqliteMetadataStore, error) {
 	}
 
 	defer func() {
+		err := database.Close()
+
 		if err != nil {
-			database.Close()
+			log.Printf("failed to close database: %v", err)
 		}
 	}()
 

@@ -3,6 +3,7 @@ package metadata
 import (
 	"errors"
 	"fmt"
+	"log"
 )
 
 type ConfigStore interface {
@@ -17,7 +18,13 @@ func (s *SqliteMetadataStore) ReadStringConfig(key string) (bool, string, error)
 		return false, "", fmt.Errorf("failed to get string key for '%s': %v", key, err)
 	}
 
-	defer result.Close()
+	defer func() {
+		err := result.Close()
+
+		if err != nil {
+			log.Printf("failed to close sql rows: %v", err)
+		}
+	}()
 
 	if !result.Next() {
 		return false, "", nil

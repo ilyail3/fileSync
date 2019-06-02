@@ -80,7 +80,7 @@ func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, qu
 			}
 
 			if r.NextPageToken == "" {
-				// log.Printf("gpg singatures: %d", gpgSignatures.Size())
+				// log.Printf("gpg signatures: %d", gpgSignatures.Size())
 				return purgeOldGpgSignatures(srv, gpgSignatures, gpgQueryFunction)
 			} else {
 				nextR, err := queryFunction(srv, r.NextPageToken).Do()
@@ -93,7 +93,7 @@ func PurgeOldFiles(srv *drive.Service, r *drive.FileList, maxMTime time.Time, qu
 			}
 		}
 	} else {
-		// log.Printf("gpg singatures: %d", gpgSignatures.Size())
+		// log.Printf("gpg signature: %d", gpgSignatures.Size())
 		return purgeOldGpgSignatures(srv, gpgSignatures, gpgQueryFunction)
 	}
 }

@@ -20,7 +20,13 @@ func DownloadFile(srv *drive.Service, address string, file *drive.File) error {
 		return fmt.Errorf("failed to get newer version from cloud: %v", err)
 	}
 
-	defer f.Body.Close()
+	defer func() {
+		err := f.Body.Close()
+
+		if err != nil {
+			log.Printf("error closing download file: %v", err)
+		}
+	}()
 
 	var mode os.FileMode = 0600
 	modeString, exists := file.Properties["mode"]
@@ -42,7 +48,13 @@ func DownloadFile(srv *drive.Service, address string, file *drive.File) error {
 		return fmt.Errorf("failed to open target file for update from cloud: %v", err)
 	}
 
-	defer fh.Close()
+	defer func() {
+		err := fh.Close()
+
+		if err != nil {
+			log.Printf("error closing download file: %v", err)
+		}
+	}()
 
 	_, err = io.Copy(fh, f.Body)
 
@@ -67,7 +79,11 @@ func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metad
 
 	defer func() {
 		if !renamed {
-			os.Remove(tmpAddress)
+			err := os.Remove(tmpAddress)
+
+			if err != nil {
+				log.Printf("error removing renamed file: %v", err)
+			}
 		}
 	}()
 
@@ -83,7 +99,11 @@ func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metad
 		}
 
 		defer func() {
-			os.Remove(signatureFile)
+			err := os.Remove(signatureFile)
+
+			if err != nil {
+				log.Printf("error removing signature file: %v", err)
+			}
 		}()
 
 		cmd := exec.Command("gpg2", "--verify", signatureFile, tmpAddress)
@@ -98,11 +118,11 @@ func TmpDownloadFile(srv *drive.Service, address string, file *drive.File, metad
 	_, err = os.Stat(address)
 
 	if err == nil {
-		if err != nil {
-			return fmt.Errorf("failed to delete original file: %v", err)
-		}
+
 	} else if os.IsExist(err) {
 		return fmt.Errorf("failed to stat original file: %v", err)
+	} else if err != nil {
+		return fmt.Errorf("failed to delete original file: %v", err)
 	}
 
 	err = os.Rename(tmpAddress, address)

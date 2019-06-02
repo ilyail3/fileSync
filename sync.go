@@ -56,7 +56,13 @@ func main() {
 		log.Fatalf("Failed to open metadata store: %v", err)
 	}
 
-	defer mtStore.Close()
+	defer func() {
+		err := mtStore.Close()
+
+		if err != nil {
+			log.Printf("failed to close metastore: %v", err)
+		}
+	}()
 
 	signKeyFlag := flag.String("sign-key", "", "sign key gpg2 signature")
 	folderNameFlag := flag.String("folder-name", "", "folder name for sync")

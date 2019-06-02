@@ -24,7 +24,11 @@ func signFile(srv *drive.Service, address string, parentId string, signKey strin
 	signFile := address + ".sig"
 
 	defer func() {
-		os.Remove(signFile)
+		err := os.Remove(signFile)
+
+		if err != nil {
+			log.Printf("failed to remove signature file: %v", err)
+		}
 	}()
 
 	fh, err := os.Open(signFile)
@@ -33,7 +37,13 @@ func signFile(srv *drive.Service, address string, parentId string, signKey strin
 		return "", fmt.Errorf("failed to open signature file: %v", err)
 	}
 
-	defer fh.Close()
+	defer func() {
+		err := fh.Close()
+
+		if err != nil {
+			log.Printf("failed to close signature file: %v", err)
+		}
+	}()
 
 	f := drive.File{Name: path.Base(signFile), Parents: []string{parentId}}
 	resultFile, err := srv.Files.Create(&f).Media(fh).Do()
@@ -59,7 +69,13 @@ func UploadFile(srv *drive.Service, address string, parentId string, metadataSto
 		return fmt.Errorf("failed to open file for uploading: %v", err)
 	}
 
-	defer fh.Close()
+	defer func() {
+		err := fh.Close()
+
+		if err != nil {
+			log.Printf("faiiled to close uploaded file: %v", err)
+		}
+	}()
 
 	properties := make(map[string]string)
 
